@@ -39,16 +39,17 @@ auto ToTensor(cv::Mat img, bool show_output = false, bool unsqueeze=false, int u
 
 auto transpose(at::Tensor tensor, c10::IntArrayRef dims = { 0, 3, 1, 2 })
 {
-    std::cout << "############### transpose ############" << std::endl;
-    std::cout << "shape before : " << tensor.sizes() << std::endl;
+    //std::cout << "############### transpose ############" << std::endl;
+    //std::cout << "shape before : " << tensor.sizes() << std::endl;
     tensor = tensor.permute(dims);
-    std::cout << "shape after : " << tensor.sizes() << std::endl;
-    std::cout << "######################################" << std::endl;
+    //std::cout << "shape after : " << tensor.sizes() << std::endl;
+    //std::cout << "######################################" << std::endl;
     return tensor;
 }
-auto ToInput(at::Tensor tensor_image)
+auto ToInput(at::Tensor tensor_image,const torch::Device& device)
 {
     // Create a vector of inputs.
+    tensor_image = tensor_image.to(device);
     return std::vector<torch::jit::IValue>{tensor_image};
 }
 
@@ -57,11 +58,21 @@ int main(int argc, const char* argv[]) {
         std::cerr << "usage: example-app <path-to-exported-script-module>\n";
         return -1;
     }
+    
+    // check if CUDA is available
+    if(!torch::hasCUDA()){
+        std::cerr << "CUDA is not available\n";
+        return 1;
+    }
+
+    torch::Device device(torch::kCUDA, 0);
+
 
     torch::jit::script::Module yolo;
     try {
         // Deserialize the ScriptModule from a file using torch::jit::load().
         yolo = torch::jit::load(argv[1]);
+        yolo.to(device);
     }
     catch (const c10::Error& e) {
         std::cerr << "error loading the model\n";
@@ -80,14 +91,16 @@ int main(int argc, const char* argv[]) {
     tensor = transpose(tensor, { (2),(0),(1) });
     //add batch dim (an inplace operation just like in pytorch)
     tensor.unsqueeze_(0);
-    std::cout << "shape after tensor conversion : " << tensor.sizes() << std::endl;
+    //std::cout << "shape after tensor conversion : " << tensor.sizes() << std::endl;
 
-    std::vector<torch::jit::IValue> input_to_net = ToInput(tensor);
+    std::vector<torch::jit::IValue> input_to_net = ToInput(tensor, device);
     
     // forward the image
     auto output = yolo.forward(input_to_net).toTuple();
-    std::cout << output->elements()[0].toTensor().sizes() << "\n\n";
+    //std::cout << output->elements()[0].toTensor().sizes() << "\n\n";
     at::Tensor preds = output->elements()[0].toTensor();
+
+    preds = preds.to(torch::kCPU);
 
     std::vector<float> confidences;
 	std::vector<cv::Rect> boxes;
@@ -105,9 +118,9 @@ int main(int argc, const char* argv[]) {
             max *= box_score;
                
             if(max > 0.8) { // conf threshold
-                std::cout << scores << " is the scores\n";
+                //std::cout << scores << " is the scores\n";
                 const int class_id = max_index.index({0,2}).item<int>();
-                std::cout << class_id << "is the max index\n";
+                //std::cout << class_id << "is the max index\n";
                 float cx = pred.index({0,0,0}).item<float>() * ratiow;
                 float cy = pred.index({0,0,1}).item<float>() * ratioh;
                 float w = pred.index({0,0,2}).item<float>() * ratiow;
@@ -128,8 +141,6 @@ int main(int argc, const char* argv[]) {
 	{
 		//count++;
 		int idx = indices[i];
-        std::cout << idx << " is the idx\n";
-        std::cout << classIds[idx] << " is the class id\n";
 		cv::Rect box = boxes[idx];
 		drawPred(confidences[idx], box.x, box.y,
 			box.x + box.width, box.y + box.height, image, classIds[idx]);
